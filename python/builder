@@ -16,7 +16,6 @@ virtualenv_stage_dir="$stage_dir/venv"
 virtualenv_dir="$HOME/env"
 pip_install="$virtualenv_dir/bin/pip install --use-mirrors --download-cache=~/.pip-cache "
 requirments_file="$HOME/current/requirements.txt"
-newrelic_config_template="$BUILDERDIR/newrelic.ini.in"
 
 python_dir="$HOME/python"
 python_bin="/usr/bin/python3.3"
@@ -24,7 +23,6 @@ python_bin="/usr/bin/python3.3"
 # Update this source package as needed
 virtualenv_download_url="https://pypi.python.org/packages/source/v/virtualenv/virtualenv-1.10.tar.gz"
 nginx_download_url="http://nginx.org/download/nginx-1.0.14.tar.gz"  #TODO configurable?
-newrelic_allowed="yes" #boolean instead?
 
 # change these if the python download version changes
 python_download_url="http://www.python.org/ftp/python/3.3.2/Python-3.3.2.tar.bz2"
@@ -106,56 +104,6 @@ create_virtualenv() {
         $python_bin $virtualenv_stage_dir/virtualenv.py --distribute $virtualenv_dir
     else
         msg "virtualenv already exists @ $virtualenv_dir , skipping install."
-    fi
-}
-
-add_newrelic_to_profile(){
-   cat >> $start_dir/profile << EOF
-export PLUGIN_NEWRELIC_ENABLED=true
-EOF
-
-}
-
-install_newrelic() {
-    
-    if [ "$newrelic_allowed" == "yes" ]; then
-        msg "NewRelic is allowed"
-        
-        if test "$SERVICE_CONFIG_NEWRELIC_APP_NAME" ; then
-            msg "app_name is declared using that value ($SERVICE_CONFIG_NEWRELIC_APP_NAME) "
-            newrelic_app_name=$SERVICE_CONFIG_NEWRELIC_APP_NAME
-        else
-            newrelic_app_name="Custom Python Application on dotCloud"
-            msg "app_name is not declared using the default value ($newrelic_app_name) "
-        fi
-
-        if test "$SERVICE_CONFIG_NEWRELIC_LICENSE_KEY" ; then
-           msg "You have entered your NewRelic license key, therefore you would like to use NewRelic. Adding it now.. "
-       
-           msg "Make sure $HOME/current is there, if not create it. "
-           mkdir -p $HOME/current
-
-           # create the newrelic.ini file
-           msg "Build the newrelic.ini file and put it in $HOME/current/newrelic.ini "
-
-           sed > $HOME/current/newrelic.ini < $newrelic_config_template    \
-            -e "s/@NEWRELIC_LICENSE_KEY@/${SERVICE_CONFIG_NEWRELIC_LICENSE_KEY}/g" \
-            -e "s/@NEWRELIC_APP_NAME@/${newrelic_app_name}/g"
-
-           # install newrelic agent
-           msg "install newrelic from pip:"
-           $pip_install newrelic
-       
-           msg "add newrelic info to the profile"
-           add_newrelic_to_profile
-
-        else
-           msg "New Relic isn't enabled skipping this step."
-        fi
-    else
-        msg "NewRelic Disabled!"
-        msg "NewRelic is not allowed because you are using an incompatible version of python."
-        msg "Please change to python 2.6 or 2.7 if you want to use NewRelic."
     fi
 }
 
@@ -271,26 +219,23 @@ install_application() {
 }
 
 # lets get started.
-msg "Step -1: installing python"
+msg "Step 0: installing python"
 install_python
 
-msg "Step 0: getting ready for build::"
+msg "Step 1: getting ready for build::"
 move_to_approot
 
-msg "Step 1: create virtualenv::"
+msg "Step 2: create virtualenv::"
 create_virtualenv
 
-msg "Step 2: install uwsgi::"
+msg "Step 3: install uwsgi::"
 install_uwsgi
 
-msg "Step 3: install nginx::"
+msg "Step 4: install nginx::"
 install_nginx
 
-msg "Step 4: build profile::"
+msg "Step 5: build profile::"
 build_profile
-
-msg "Step 5: check if we need to install NewRelic::"
-install_newrelic
 
 msg "Step 6: install application::"
 install_application
