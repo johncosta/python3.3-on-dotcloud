@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+
+set -e
+shopt -s extglob
+
+BUILDERDIR="$(dirname "$0")"
+
+# variables needed later.
+start_dir=`pwd`
+nginx_install_dir="$HOME/nginx"
+python_install_dir="$HOME/python"
+stage_dir="$start_dir/tmp"
+python_stage_dir="$stage_dir/python"
+nginx_stage_dir="$stage_dir/stage"
+virtualenv_stage_dir="$stage_dir/venv"
+virtualenv_dir="$HOME/env"
+pip_install="$virtualenv_dir/bin/pip install --use-mirrors --download-cache=~/.pip-cache "
+requirments_file="$HOME/current/requirements.txt"
+newrelic_config_template="$BUILDERDIR/newrelic.ini.in"
+
+python_dir="$HOME/python"
+python_bin="/usr/bin/python3.3"
+
+# Update this source package as needed
+virtualenv_download_url="https://pypi.python.org/packages/source/v/virtualenv/virtualenv-1.10.tar.gz"
+nginx_download_url="http://nginx.org/download/nginx-1.0.14.tar.gz"  #TODO configurable?
+newrelic_allowed="yes" #boolean instead?
+
+# change these if the python download version changes
+python_download_url="http://www.python.org/ftp/python/3.3.2/Python-3.3.2.tar.bz2"
+python_version="Python-3.3.2"
+
+
+# functions
+msg() {
+    echo -e "\033[1;32m-->\033[0m $0:" $*
+}
+
+die() {
+    msg $*
+    exit 1
+}
+
+move_to_approot() {
+    [ -n "$SERVICE_APPROOT" ] && cd $SERVICE_APPROOT
+}
+
+install_python() {
+
+    if [ ! -d $python_dir ] ; then
+        msg "building python @ $python_dir"
+
+        msg "Make sure $pypy_stage_dir exists and if not create it."
+        mkdir -p $python_stage_dir
+
+        msg "downloading python from ($python_download_url) and saving it to ($python_stage_dir/python.tar.bz2)"
+        curl -L -o $python_stage_dir/python.tar.bz2 $python_download_url
+
+        msg "untar $python_stage_dir/python.tar.bz2"
+        msg "command: tar -xjf $python_stage_dir/python.tar.bz2 -C $python_stage_dir"
+        tar -xjf $python_stage_dir/python.tar.bz2 -C $python_stage_dir
+
+        msg "list contents of $python_stage_dir"
+        ls -al $python_stage_dir
+
+        msg "list contents of $python_stage_dir/$python_version"
+        ls -al $python_stage_dir/$python_version
+
+        msg "creating python installation directory"
+        mkdir $python_install_dir
+
+        pushd $python_stage_dir/$python_version
+        ./configure --prefix=$python_install_dir
+        make
+        make install && popd
+
+        msg "create symlink from $python_install_dir/python3.3 to $python_dir"
+        ln -fs $python_install_dir/python3.3 $python_dir
+
+        msg "remove $python_stage_dir since it is no longer needed"
+        rm -rf $python_stage_dir
+
+        msg "set python_bin to $python_dir/bin/python"
+        python_bin=$python_dir/bin/python3.3
+
+    else
+        msg "python already exists @ $python_dir , skipping install."
+    fi
+}
+
+create_virtualenv() {
+    if [ ! -d $virtualenv_dir ] ; then
+        msg "building virtualenv @ $virtualenv_dir"
+        
+        msg "Make sure $virtualenv_stage_dir exists and if not create it."
+        mkdir -p $virtualenv_stage_dir
+        
+        # can't use built in version of virtualenv, it doesn't support python3
+        msg "downloading virtualenv from ($virtualenv_download_url) and saving it as ($virtualenv_stage_dir/virtualenv.tar.gz)"
+        curl -o $virtualenv_stage_dir/virtualenv.tar.gz $virtualenv_download_url
+
+	    msg "Unpacking tarball ..."
+	    pushd $virtualenv_stage_dir && tar -x --strip-components=1 -vf virtualenv.tar.gz && popd
+        
+        msg "creating virtualenv @ $virtualenv_dir with python_version = $python_bin"
+        $python_bin $virtualenv_stage_dir/virtualenv.py --distribute $virtualenv_dir
+    else
+        msg "virtualenv already exists @ $virtualenv_dir , skipping install."
+    fi
+}
+
+add_newrelic_to_profile(){
+   cat >> $start_dir/profile << EOF
+export PLUGIN_NEWRELIC_ENABLED=true
+EOF
+
+}
+
+install_newrelic() {
+    
+    if [ "$newrelic_allowed" == "yes" ]; then
+        msg "NewRelic is allowed"
+        
+        if test "$SERVICE_CONFIG_NEWRELIC_APP_NAME" ; then
+            msg "app_name is declared using that value ($SERVICE_CONFIG_NEWRELIC_APP_NAME) "
+            newrelic_app_name=$SERVICE_CONFIG_NEWRELIC_APP_NAME
+        else
+            newrelic_app_name="Custom Python Application on dotCloud"
+            msg "app_name is not declared using the default value ($newrelic_app_name) "
+        fi
+
+        if test "$SERVICE_CONFIG_NEWRELIC_LICENSE_KEY" ; then
+           msg "You have entered your NewRelic license key, therefore you would like to use NewRelic. Adding it now.. "
+       
+           msg "Make sure $HOME/current is there, if not create it. "
+           mkdir -p $HOME/current
+
+           # create the newrelic.ini file
+           msg "Build the newrelic.ini file and put it in $HOME/current/newrelic.ini "
+
+           sed > $HOME/current/newrelic.ini < $newrelic_config_template    \
+            -e "s/@NEWRELIC_LICENSE_KEY@/${SERVICE_CONFIG_NEWRELIC_LICENSE_KEY}/g" \
+            -e "s/@NEWRELIC_APP_NAME@/${newrelic_app_name}/g"
+
+           # install newrelic agent
+           msg "install newrelic from pip:"
+           $pip_install newrelic
+       
+           msg "add newrelic info to the profile"
+           add_newrelic_to_profile
+
+        else
+           msg "New Relic isn't enabled skipping this step."
+        fi
+    else
+        msg "NewRelic Disabled!"
+        msg "NewRelic is not allowed because you are using an incompatible version of python."
+        msg "Please change to python 2.6 or 2.7 if you want to use NewRelic."
+    fi
+}
+
+install_requirements(){
+    if [ -e "$requirments_file" ]; then
+        msg "found requirements.txt file installing requirements from $requirments_file"
+        $pip_install -r $requirments_file
+    else
+        msg "looked for requirements file at ($requirments_file) and didn't find one. skipping requirements install"
+    fi
+}
+
+install_uwsgi() {
+    msg "install uwsgi from pip:"
+    $pip_install uwsgi
+}
+
+install_nginx() {
+    local nginx_url=$nginx_download_url
+
+    msg "installing Nginx into: $nginx_install_dir"
+
+    # install nginx
+    if [ ! -d $nginx_install_dir ] ; then
+        msg "making directory: $nginx_install_dir "
+        mkdir -p $nginx_install_dir
+        
+        msg "making directory: $nginx_stage_dir "
+        mkdir -p $nginx_stage_dir
+
+        msg "downloading nginx from ($nginx_url) and untaring into ($nginx_stage_dir) "
+        wget -O - $nginx_url | tar -C $nginx_stage_dir --strip-components=1 -zxf -
+        [ $? -eq 0 ] || die "can't fetch nginx"
+
+        msg "Successfully download and untarred nginx"
+        
+        msg "move into $nginx_stage_dir "
+        cd $nginx_stage_dir 
+
+        msg "trying to compile nginx, and then install it"
+        export CFLAGS="-O3 -pipe"
+           ./configure   \
+            --prefix=$nginx_install_dir \
+            --with-http_addition_module \
+            --with-http_dav_module \
+            --with-http_geoip_module \
+            --with-http_gzip_static_module \
+            --with-http_realip_module \
+            --with-http_stub_status_module \
+            --with-http_ssl_module \
+            --with-http_sub_module \
+            --with-http_xslt_module && make && make install
+        [ $? -eq 0 ] || die "Nginx install failed"
+
+        msg "Successfully compiled and installed nginx"
+
+        msg "remove some of the default config files from the nginx config directory that aren't needed"
+        rm $nginx_install_dir/conf/*.default
+
+        msg "cleaning up ($stage_dir) since it is no longer needed."
+        rm -rf $stage_dir
+
+        msg "change directories back to $start_dir"
+        cd $start_dir
+
+        msg "finished installing nginx."
+    else
+        msg "Nginx already installed, skipping this step."
+    fi
+}
+
+build_profile(){
+    cat > $start_dir/profile << EOF
+
+# set PATH so it includes user's private bin if it exists
+if [ -d "$HOME/bin" ] ; then
+    PATH="$HOME/bin:$PATH"
+fi
+
+export PATH="$nginx_install_dir/sbin:$PATH"
+
+# if running bash
+if [ -n "$BASH_VERSION" ]; then
+    # include .bashrc if it exists
+    if [ -f "$HOME/.bashrc" ]; then
+        . "$HOME/.bashrc"
+    fi
+fi
+
+if [ -f $HOME/env/bin/activate ] ; then
+    source $HOME/env/bin/activate
+fi
+
+export PYTHONPATH=$HOME/current
+EOF
+
+}
+
+install_application() {
+
+    msg "change directories to $start_dir"
+    cd $start_dir
+
+    msg "moving $start_dir/profile to ~/"
+    mv $start_dir/profile ~/
+
+    msg "moving $BUILDERDIR/uwsgi.sh to ~/"
+    mv $BUILDERDIR/uwsgi.sh ~/
+
+    # Use ~/code and ~/current like the regular python service for better compatibility
+    msg "installing application to ~/current/ from $start_dir"
+    rsync -avH --delete --exclude "data" --exclude "README.rst" * ~/current/
+}
+
+# lets get started.
+msg "Step -1: installing python"
+install_python
+
+msg "Step 0: getting ready for build::"
+move_to_approot
+
+msg "Step 1: create virtualenv::"
+create_virtualenv
+
+msg "Step 2: install uwsgi::"
+install_uwsgi
+
+msg "Step 3: install nginx::"
+install_nginx
+
+msg "Step 4: build profile::"
+build_profile
+
+msg "Step 5: check if we need to install NewRelic::"
+install_newrelic
+
+msg "Step 6: install application::"
+install_application
+
+msg "Step 7: install application specific requirements::"
+install_requirements
+
+msg "All done..."
